@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IncidentPulse Pro - Calculation Fix</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; min-height: 100vh; display: flex; flex-direction: column; }
+        .data-table thead th { position: sticky; top: 0; background: #1e293b; color: white; font-size: 11px; z-index: 40; white-space: nowrap; }
+        .custom-scroll::-webkit-scrollbar { height: 6px; width: 6px; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        main { flex: 1; }
+    </style>
+</head>
+<body class="text-slate-900">
+
+    <nav class="bg-slate-900 text-white px-8 py-3 flex justify-between items-center shadow-lg">
+        <div class="flex items-center gap-2">
+            <div class="bg-blue-600 p-2 rounded-xl text-white shadow-lg">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+            </div>
+            <span class="text-lg font-bold">IncidentPulse <span class="text-blue-400 font-normal text-sm">Analytics</span></span>
+        </div>
+        <button onclick="location.reload()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-1.5 rounded-lg text-xs font-bold transition border border-slate-700">Reset System</button>
+    </nav>
+
+    <main class="max-w-[1600px] mx-auto w-full p-4 lg:p-10">
+        
+        <div id="uploadView" class="max-w-xl mx-auto mt-20">
+            <div onclick="document.getElementById('fileIn').click()" class="bg-white border-2 border-dashed border-slate-300 rounded-[2rem] p-16 text-center hover:border-blue-500 hover:bg-blue-50 transition cursor-pointer group shadow-sm">
+                <input type="file" id="fileIn" class="hidden" accept=".xlsx, .xls, .csv">
+                <h2 class="text-2xl font-bold mb-2">Import Report</h2>
+                <p class="text-slate-500 mb-8 italic text-sm">Fixed: Incident Contained Time (T5-T1) Logic</p>
+                <button class="bg-slate-900 text-white px-10 py-3 rounded-xl font-bold shadow-xl">Select File</button>
+            </div>
+        </div>
+
+        <div id="dashboard" class="hidden space-y-6">
+            <div class="flex flex-wrap items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                <div class="flex items-center gap-4">
+                    <span class="text-sm font-bold text-slate-400 uppercase tracking-widest leading-none"><span class="bg-blue-600 text-white px-2 py-1 rounded mr-2 tracking-normal">Discussion</span> Unit:</span>
+                    <select id="unitSel" class="bg-slate-50 border border-slate-200 rounded-xl px-6 py-2.5 font-bold outline-none ring-blue-500 focus:ring-2 cursor-pointer transition">
+                        <option value="1">Seconds (s)</option>
+                        <option value="60">Minutes (m)</option>
+                        <option value="3600">Hours (h)</option>
+                    </select>
+                </div>
+                <div class="flex gap-3">
+                    <button onclick="location.reload()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 px-6 py-2.5 rounded-xl font-bold transition">New File</button>
+                    <button onclick="exportExcel()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-2.5 rounded-xl font-bold shadow-lg transition flex items-center gap-2">
+                        Download XLSX
+                    </button>
+                </div>
+            </div>
+
+            <div class="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm h-[320px]">
+                <canvas id="mainChart"></canvas>
+            </div>
+
+            <div class="bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden">
+                <div class="overflow-x-auto custom-scroll max-h-[600px]">
+                    <table class="w-full text-left border-collapse data-table text-[12px]">
+                        <thead id="hRow"></thead>
+                        <tbody id="bRow" class="divide-y divide-slate-100"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="bg-white border-t border-slate-200 py-4 text-center text-slate-400 text-[10px] font-bold uppercase tracking-widest">
+        <p>© 2026 Maveera | All Rights Reserved</p>
+    </footer>
+
+<script>
+    let masterRows = [];
+    let cleanHeaders = [];
+    let tMap = {};
+    let chartObj = null;
+
+    document.getElementById('fileIn').addEventListener('change', function(e) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const wb = XLSX.read(event.target.result, { type: 'array', cellDates: true, dateNF: 'yyyy-mm-dd hh:mm:ss' });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
+            process(raw);
+        };
+        reader.readAsArrayBuffer(e.target.files[0]);
+    });
+
+    document.getElementById('unitSel').addEventListener('change', render);
+
+    function process(raw) {
+        if (raw.length < 1) return;
+        const rawHeader = raw[0];
+        tMap = { t1:-1, t2:-1, t3:-1, t4:-1, t5:-1 };
+
+        // 1. Unified T5 Scavenger Logic
+        rawHeader.forEach((h, i) => {
+            if(!h) return;
+            const s = String(h).toUpperCase();
+            if (s.includes('[T1]')) tMap.t1 = i;
+            if (s.includes('[T2]')) tMap.t2 = i;
+            if (s.includes('[T3]')) tMap.t3 = i;
+            if (s.includes('[T4]')) tMap.t4 = i;
+            // Scans for technical tag or keywords "Closed", "Contained", "Resolved"
+            if (s.includes('[T5]') || s.includes('CLOSED') || s.includes('CONTAINED') || s.includes('RESOLVED')) {
+                if(tMap.t5 === -1) tMap.t5 = i; 
+            }
+        });
+
+        const stopIndex = Math.max(...Object.values(tMap));
+        const filterList = ["DETECTION TIME", "INCIDENT ACKNOWLEDGED TIME", "INCIDENT RESPONSE TIME", "INCIDENT CONTAINED TIME"];
+        
+        cleanHeaders = [];
+        headerMapping = [];
+        rawHeader.forEach((h, i) => {
+            const upH = String(h || "").toUpperCase();
+            if(i <= stopIndex && !filterList.includes(upH)) {
+                cleanHeaders.push(String(h).replace(/\[T\d\]/gi, '').trim());
+                headerMapping.push(i);
+            }
+        });
+
+        let skip = 1;
+        if (raw[1] && String(raw[1].join('')).includes('(T')) skip = 2;
+
+        masterRows = raw.slice(skip).filter(r => r[tMap.t1]).map(r => {
+            const pDate = (v) => {
+                if (!v || v === "0" || v === 0 || String(v).trim() === "") return null;
+                const d = new Date(v);
+                return isNaN(d.getTime()) ? null : d;
+            };
+            return {
+                base: headerMapping.map(idx => (r[idx] === undefined || r[idx] === null || String(r[idx]).trim() === "") ? "0" : r[idx]),
+                t1: pDate(r[tMap.t1]), t2: pDate(r[tMap.t2]),
+                t3: pDate(r[tMap.t3]), t4: pDate(r[tMap.t4]), t5: pDate(r[tMap.t5])
+            };
+        });
+
+        document.getElementById('uploadView').classList.add('hidden');
+        document.getElementById('dashboard').classList.remove('hidden');
+        render();
+    }
+
+    function render() {
+        const div = parseFloat(document.getElementById('unitSel').value);
+        const tbody = document.getElementById('bRow');
+        const thead = document.getElementById('hRow');
+
+        thead.innerHTML = `<tr>${cleanHeaders.map(h => `<th class="px-4 py-3">${h}</th>`).join('')}
+            <th class="text-sky-400">Detection Time (T2-T1)</th>
+            <th class="text-indigo-400">Incident Acknowledged Time T3-T2</th>
+            <th class="text-rose-400">Incident Response Time (T4-T3)</th>
+            <th class="text-emerald-400 font-bold">Incident Contained Time (T5-T1)</th></tr>`;
+
+        tbody.innerHTML = '';
+        let sums = { d:0, a:0, r:0, c:0, count:0 };
+
+        masterRows.forEach(row => {
+            const d1 = diff(row.t2, row.t1), d2 = diff(row.t3, row.t2), d3 = diff(row.t4, row.t3), d4 = diff(row.t5, row.t1);
+            
+            const tr = document.createElement('tr');
+            tr.innerHTML = row.base.map(c => `<td class="px-4 py-4 text-slate-600">${c}</td>`).join('') + 
+                `<td class="px-4 py-4 font-bold text-slate-900">${fmt(d1, div)}</td>
+                 <td class="px-4 py-4 font-bold text-slate-900">${fmt(d2, div)}</td>
+                 <td class="px-4 py-4 font-bold text-slate-900">${fmt(d3, div)}</td>
+                 <td class="px-4 py-4 font-bold text-emerald-600">${fmt(d4, div)}</td>`;
+            tbody.appendChild(tr);
+
+            if(d1 !== null) { sums.d += d1; sums.count++; }
+            if(d2 !== null) sums.a += d2;
+            if(d3 !== null) sums.r += d3;
+            if(d4 !== null) sums.c += d4;
+        });
+
+        updateChart([sums.d, sums.a, sums.r, sums.c].map(v => (v/(sums.count || 1)/div).toFixed(2)));
+    }
+
+    function diff(a, b) { return (a && b) ? (a - b)/1000 : null; }
+    function fmt(v, d) { return (v === null || isNaN(v)) ? "0" : (v/d).toFixed(2); }
+
+    function updateChart(data) {
+        if (chartObj) chartObj.destroy();
+        const ctx = document.getElementById('mainChart').getContext('2d');
+        chartObj = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: ['Detection', 'Acknowledgment', 'Response', 'Resolution'],
+                datasets: [{ data: data, backgroundColor: ['#38bdf8', '#818cf8', '#fb7185', '#10b981'], borderRadius: 6, barThickness: 45 }]
+            },
+            options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { display: false } }, x: { grid: { display: false } } } }
+        });
+    }
+
+    function exportExcel() {
+        const div = parseFloat(document.getElementById('unitSel').value);
+        const unit = document.getElementById('unitSel').selectedOptions[0].text.split(' ')[0];
+        const data = masterRows.map(row => {
+            const obj = {};
+            cleanHeaders.forEach((h, i) => obj[h] = row.base[i]);
+            obj[`Detection Time (T2-T1)`] = fmt(diff(row.t2, row.t1), div);
+            obj[`Incident Acknowledged Time T3-T2`] = fmt(diff(row.t3, row.t2), div);
+            obj[`Incident Response Time (T4-T3)`] = fmt(diff(row.t4, row.t3), div);
+            obj[`Incident Contained Time (T5-T1)`] = fmt(diff(row.t5, row.t1), div);
+            return obj;
+        });
+        const ws = XLSX.utils.json_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Incident Analysis");
+        XLSX.writeFile(wb, "Incident_Analytics_Report_Fixed.xlsx");
+    }
+</script>
+</body>
+</html>
